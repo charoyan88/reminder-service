@@ -3,13 +3,17 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Order\StoreRequest;
+use App\Http\Requests\Order\UpdateRequest;
+use App\Http\Requests\Order\ExpiringRequest;
+use App\Http\Requests\Order\ExpiredRequest;
+use App\Http\Resources\OrderResource;
+use App\Http\Resources\OrderCollection;
 use App\Models\Order;
 use App\Models\OrderType;
 use App\Services\OrderService;
 use App\Services\ReminderService;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Log;
 
 class OrderController extends Controller
 {
@@ -25,139 +29,219 @@ class OrderController extends Controller
     /**
      * Create a new order
      */
-    public function store(Request $request): JsonResponse
+    public function store(StoreRequest $request): OrderResource
     {
-        // Validate request
-        $validator = Validator::make($request->all(), [
-            'business_id' => 'required|exists:businesses,id',
-            'order_type_id' => 'required|exists:order_types,id',
-            'user_id' => 'required|exists:users,id',
-            'external_order_id' => 'nullable|string',
-            'application_date' => 'required|date',
+        Log::info('Creating new order', [
+            'user_id' => $request->user_id,
+            'business_id' => $request->business_id,
+            'order_type_id' => $request->order_type_id
         ]);
 
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
-        }
+        // Get the validated data
+        $validatedData = $request->validated();
 
-        // Get the order type
-        $orderType = OrderType::findOrFail($request->order_type_id);
+        try {
+            // Get the order type
+            $orderType = OrderType::findOrFail($validatedData['order_type_id']);
 
-        // Create the order
-        $order = new Order($request->all());
-        
-        // Calculate expiration date based on order type
-        $order->application_date = $request->application_date;
-        $order->expiration_date = $order->calculateExpirationDate();
-        $order->is_active = true;
-        $order->save();
+            // Create the order
+            $order = new Order($validatedData);
+            
+            // Calculate expiration date based on order type
+            $order->application_date = $validatedData['application_date'];
+            $order->expiration_date = $order->calculateExpirationDate();
+            $order->is_active = true;
+            $order->save();
 
-        // Check for existing orders of the same type for this user
-        $existingOrders = $this->orderService->findExistingOrdersForUser(
-            $request->user_id,
-            $request->order_type_id
-        );
+            Log::info('Order created successfully', [
+                'order_id' => $order->id,
+                'expiration_date' => $order->expiration_date
+            ]);
 
-        // If there are existing orders, mark them as replaced by this new order
-        foreach ($existingOrders as $existingOrder) {
-            if ($existingOrder->id !== $order->id) {
-                $this->orderService->replaceOrder($existingOrder, $order);
-                
-                // Cancel any pending reminders for the replaced order
-                $this->reminderService->cancelRemindersForOrder($existingOrder);
+            // Check for existing orders of the same type for this user
+            $existingOrders = $this->orderService->findExistingOrdersForUser(
+                $validatedData['user_id'],
+                $validatedData['order_type_id']
+            );
+
+            // If there are existing orders, mark them as replaced by this new order
+            foreach ($existingOrders as $existingOrder) {
+                if ($existingOrder->id !== $order->id) {
+                    $this->orderService->replaceOrder($existingOrder, $order);
+                    
+                    Log::info('Existing order marked as replaced', [
+                        'replaced_order_id' => $existingOrder->id,
+                        'new_order_id' => $order->id
+                    ]);
+                    
+                    // Cancel any pending reminders for the replaced order
+                    $this->reminderService->cancelRemindersForOrder($existingOrder);
+                }
             }
+
+            // Schedule reminders for the new order
+            $reminders = $this->reminderService->scheduleRemindersForOrder($order);
+
+            Log::info('Reminders scheduled for order', [
+                'order_id' => $order->id,
+                'reminder_count' => count($reminders)
+            ]);
+
+            // Load relationships
+            $order->load(['orderType', 'user', 'business']);
+
+            return (new OrderResource($order))
+                ->additional([
+                    'scheduled_reminders' => count($reminders),
+                    'message' => 'Order created successfully'
+                ])
+                ->response()
+                ->setStatusCode(201);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to create order', [
+                'error' => $e->getMessage(),
+                'user_id' => $validatedData['user_id'],
+                'business_id' => $validatedData['business_id']
+            ]);
+            throw $e;
         }
-
-        // Schedule reminders for the new order
-        $reminders = $this->reminderService->scheduleRemindersForOrder($order);
-
-        return response()->json([
-            'order' => $order,
-            'scheduled_reminders' => count($reminders),
-        ], 201);
     }
 
     /**
      * Update an existing order
      */
-    public function update(Request $request, $id): JsonResponse
+    public function update(UpdateRequest $request, $id): OrderResource
     {
-        // Find the order
-        $order = Order::findOrFail($id);
-        
-        // Validate request
-        $validator = Validator::make($request->all(), [
-            'is_active' => 'boolean',
-            'application_date' => 'date',
+        Log::info('Updating order', [
+            'order_id' => $id,
+            'changes' => $request->validated()
         ]);
 
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
-        }
-
-        // Update fields
-        if (isset($request->is_active)) {
-            $order->is_active = $request->is_active;
-        }
-        
-        if (isset($request->application_date)) {
-            $order->application_date = $request->application_date;
-            $order->expiration_date = $order->calculateExpirationDate();
+        try {
+            // Find the order
+            $order = Order::with(['orderType', 'user', 'business'])->findOrFail($id);
             
-            // Cancel existing reminders and reschedule
-            $this->reminderService->cancelRemindersForOrder($order, 'Order details updated');
-            $reminders = $this->reminderService->scheduleRemindersForOrder($order);
-        }
-        
-        $order->save();
+            // Get the validated data
+            $validatedData = $request->validated();
 
-        return response()->json([
-            'order' => $order,
-            'scheduled_reminders' => $reminders ?? 0,
-        ]);
+            // Update fields
+            if (isset($validatedData['is_active'])) {
+                $order->is_active = $validatedData['is_active'];
+                Log::info('Order status updated', [
+                    'order_id' => $id,
+                    'is_active' => $validatedData['is_active']
+                ]);
+            }
+            
+            if (isset($validatedData['application_date'])) {
+                $order->application_date = $validatedData['application_date'];
+                $order->expiration_date = $order->calculateExpirationDate();
+                
+                Log::info('Order dates updated', [
+                    'order_id' => $id,
+                    'application_date' => $validatedData['application_date'],
+                    'new_expiration_date' => $order->expiration_date
+                ]);
+                
+                // Cancel existing reminders and reschedule
+                $this->reminderService->cancelRemindersForOrder($order, 'Order details updated');
+                $reminders = $this->reminderService->scheduleRemindersForOrder($order);
+
+                Log::info('Order reminders rescheduled', [
+                    'order_id' => $id,
+                    'new_reminder_count' => count($reminders ?? [])
+                ]);
+            }
+            
+            $order->save();
+
+            return (new OrderResource($order))
+                ->additional([
+                    'scheduled_reminders' => $reminders ?? 0,
+                    'message' => 'Order updated successfully'
+                ]);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to update order', [
+                'order_id' => $id,
+                'error' => $e->getMessage()
+            ]);
+            throw $e;
+        }
     }
 
     /**
      * Get orders expiring soon
      */
-    public function getExpiringOrders(Request $request): JsonResponse
+    public function getExpiringOrders(ExpiringRequest $request): OrderCollection
     {
-        $validator = Validator::make($request->all(), [
-            'days' => 'required|integer|min:1',
-            'order_type_id' => 'nullable|exists:order_types,id',
+        $validatedData = $request->validated();
+
+        Log::info('Fetching expiring orders', [
+            'days' => $validatedData['days'],
+            'order_type_id' => $validatedData['order_type_id'] ?? 'all'
         ]);
 
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+        try {
+            $orders = $this->orderService->findOrdersExpiringWithinDays(
+                $validatedData['days'],
+                $validatedData['order_type_id'] ?? null
+            );
+
+            // Load relationships
+            $orders->load(['orderType', 'user', 'business']);
+
+            Log::info('Successfully fetched expiring orders', [
+                'count' => $orders->count(),
+                'days' => $validatedData['days']
+            ]);
+
+            return new OrderCollection($orders);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to fetch expiring orders', [
+                'days' => $validatedData['days'],
+                'error' => $e->getMessage()
+            ]);
+            throw $e;
         }
-
-        $orders = $this->orderService->findOrdersExpiringWithinDays(
-            $request->days,
-            $request->order_type_id
-        );
-
-        return response()->json(['orders' => $orders]);
     }
 
     /**
      * Get recently expired orders
      */
-    public function getExpiredOrders(Request $request): JsonResponse
+    public function getExpiredOrders(ExpiredRequest $request): OrderCollection
     {
-        $validator = Validator::make($request->all(), [
-            'days' => 'required|integer|min:1',
-            'order_type_id' => 'nullable|exists:order_types,id',
+        $validatedData = $request->validated();
+
+        Log::info('Fetching expired orders', [
+            'days' => $validatedData['days'],
+            'order_type_id' => $validatedData['order_type_id'] ?? 'all'
         ]);
 
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+        try {
+            $orders = $this->orderService->findOrdersExpiredWithinDays(
+                $validatedData['days'],
+                $validatedData['order_type_id'] ?? null
+            );
+
+            // Load relationships
+            $orders->load(['orderType', 'user', 'business']);
+
+            Log::info('Successfully fetched expired orders', [
+                'count' => $orders->count(),
+                'days' => $validatedData['days']
+            ]);
+
+            return new OrderCollection($orders);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to fetch expired orders', [
+                'days' => $validatedData['days'],
+                'error' => $e->getMessage()
+            ]);
+            throw $e;
         }
-
-        $orders = $this->orderService->findOrdersExpiredWithinDays(
-            $request->days,
-            $request->order_type_id
-        );
-
-        return response()->json(['orders' => $orders]);
     }
 } 

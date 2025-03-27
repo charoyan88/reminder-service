@@ -24,8 +24,7 @@ use Illuminate\Support\Facades\Route;
 Route::get('/status', function () {
     return response()->json([
         'status' => 'ok',
-        'service' => 'reminder-service',
-        'timestamp' => now()->toIso8601String()
+        'message' => 'The Reminder Service is up and running!'
     ]);
 });
 
@@ -48,12 +47,11 @@ Route::delete('/reminder-configurations/{id}', [ReminderConfigurationController:
 Route::post('/reminder-configurations/{id}/status', [ReminderConfigurationController::class, 'setStatus']);
 
 // Reminder routes
-Route::get('/orders/{orderId}/reminders', [ReminderController::class, 'getOrderReminders']);
-Route::get('/reminders/{id}', [ReminderController::class, 'show']);
-Route::post('/reminders/{id}/send', [ReminderController::class, 'send']);
-Route::post('/reminders/process', [ReminderController::class, 'processPendingReminders']);
-Route::post('/reminders/{id}/cancel', [ReminderController::class, 'cancel']);
-Route::post('/reminders/{id}/reschedule', [ReminderController::class, 'reschedule']);
+Route::prefix('reminders')->group(function () {
+    Route::post('/schedule', [ReminderController::class, 'schedule']);
+    Route::post('/cancel', [ReminderController::class, 'cancel']);
+    Route::post('/status', [ReminderController::class, 'updateStatus']);
+});
 
 // Email template routes
 Route::get('/email-templates', [EmailTemplateController::class, 'index']);
@@ -70,8 +68,10 @@ Route::middleware('auth:sanctum')->group(function () {
 Route::get('/languages', [UserPreferenceController::class, 'getAvailableLanguages']);
 
 // Reminder interval configuration routes
-Route::get('/reminder-intervals', [ReminderIntervalConfigController::class, 'index']);
-Route::post('/reminder-intervals', [ReminderIntervalConfigController::class, 'store']);
-Route::put('/reminder-intervals/{id}', [ReminderIntervalConfigController::class, 'update']);
-Route::delete('/reminder-intervals/{id}', [ReminderIntervalConfigController::class, 'destroy']);
-Route::post('/reminder-intervals/{id}/toggle-status', [ReminderIntervalConfigController::class, 'toggleStatus']); 
+Route::prefix('reminder-intervals')->group(function () {
+    Route::get('/', [ReminderIntervalConfigController::class, 'index']);
+    Route::post('/', [ReminderIntervalConfigController::class, 'store']);
+    Route::put('/{id}', [ReminderIntervalConfigController::class, 'update']);
+    Route::delete('/{id}', [ReminderIntervalConfigController::class, 'destroy']);
+    Route::post('/{id}/toggle-status', [ReminderIntervalConfigController::class, 'toggleStatus']);
+}); 

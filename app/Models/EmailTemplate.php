@@ -25,27 +25,4 @@ class EmailTemplate extends Model
     protected $casts = [
         'is_active' => 'boolean',
     ];
-    
-    /**
-     * Parse the template with the given data
-     * 
-     * @param array $data The data to replace in the template
-     * @return array The parsed subject and body
-     */
-    public function parse(array $data): array
-    {
-        $subject = $this->subject;
-        $body = $this->body;
-        
-        foreach ($data as $key => $value) {
-            $placeholder = '{{' . $key . '}}';
-            $subject = str_replace($placeholder, $value, $subject);
-            $body = str_replace($placeholder, $value, $body);
-        }
-        
-        return [
-            'subject' => $subject,
-            'body' => $body,
-        ];
-    }
-} 
+}

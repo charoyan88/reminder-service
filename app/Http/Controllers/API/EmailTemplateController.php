@@ -3,30 +3,32 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\EmailTemplate\IndexRequest;
+use App\Http\Requests\EmailTemplate\StoreRequest;
+use App\Http\Requests\EmailTemplate\UpdateRequest;
 use App\Models\EmailTemplate;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Validator;
 
 class EmailTemplateController extends Controller
 {
     /**
      * Get all email templates with optional filtering
      */
-    public function index(Request $request): JsonResponse
+    public function index(IndexRequest $request): JsonResponse
     {
+        $validatedData = $request->validated();
         $query = EmailTemplate::query();
         
-        if ($request->has('type')) {
-            $query->where('type', $request->type);
+        if (isset($validatedData['type'])) {
+            $query->where('type', $validatedData['type']);
         }
         
-        if ($request->has('language_code')) {
-            $query->where('language_code', $request->language_code);
+        if (isset($validatedData['language_code'])) {
+            $query->where('language_code', $validatedData['language_code']);
         }
         
-        if ($request->has('is_active')) {
-            $query->where('is_active', $request->is_active);
+        if (isset($validatedData['is_active'])) {
+            $query->where('is_active', $validatedData['is_active']);
         }
         
         $templates = $query->get();
@@ -37,22 +39,10 @@ class EmailTemplateController extends Controller
     /**
      * Store a new email template
      */
-    public function store(Request $request): JsonResponse
+    public function store(StoreRequest $request): JsonResponse
     {
-        $validator = Validator::make($request->all(), [
-            'name' => 'required|string|max:255',
-            'type' => 'required|in:pre_expiration,post_expiration',
-            'subject' => 'required|string',
-            'body' => 'required|string',
-            'language_code' => 'required|string|size:2',
-            'is_active' => 'boolean',
-        ]);
-        
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
-        }
-        
-        $template = EmailTemplate::create($request->all());
+        $validatedData = $request->validated();
+        $template = EmailTemplate::create($validatedData);
         
         return response()->json(['template' => $template], 201);
     }
@@ -60,24 +50,11 @@ class EmailTemplateController extends Controller
     /**
      * Update an existing email template
      */
-    public function update(Request $request, $id): JsonResponse
+    public function update(UpdateRequest $request, $id): JsonResponse
     {
         $template = EmailTemplate::findOrFail($id);
-        
-        $validator = Validator::make($request->all(), [
-            'name' => 'string|max:255',
-            'type' => 'in:pre_expiration,post_expiration',
-            'subject' => 'string',
-            'body' => 'string',
-            'language_code' => 'string|size:2',
-            'is_active' => 'boolean',
-        ]);
-        
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
-        }
-        
-        $template->update($request->all());
+        $validatedData = $request->validated();
+        $template->update($validatedData);
         
         return response()->json(['template' => $template]);
     }

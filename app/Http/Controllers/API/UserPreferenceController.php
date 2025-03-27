@@ -3,10 +3,9 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\UserPreference\UpdateLanguageRequest;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Validator;
 
 class UserPreferenceController extends Controller
 {
@@ -26,18 +25,12 @@ class UserPreferenceController extends Controller
     /**
      * Update the user's language preference
      */
-    public function updateLanguage(Request $request): JsonResponse
+    public function updateLanguage(UpdateLanguageRequest $request): JsonResponse
     {
-        $validator = Validator::make($request->all(), [
-            'language' => 'required|string|size:2',
-        ]);
-        
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
-        }
+        $validatedData = $request->validated();
         
         $user = Auth::user();
-        $user->language = $request->language;
+        $user->language = $validatedData['language'];
         $user->save();
         
         return response()->json([

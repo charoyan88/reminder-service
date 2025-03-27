@@ -3,124 +3,157 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Reminder\ScheduleRequest;
+use App\Http\Requests\Reminder\CancelRequest;
+use App\Http\Requests\Reminder\StatusRequest;
 use App\Models\Order;
 use App\Models\Reminder;
-use App\Services\EmailService;
-use App\Services\ReminderService;
+use App\Services\Interfaces\ReminderServiceInterface;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class ReminderController extends Controller
 {
-    protected ReminderService $reminderService;
-    protected EmailService $emailService;
-    
-    public function __construct(ReminderService $reminderService, EmailService $emailService)
+    /**
+     * @var ReminderServiceInterface
+     */
+    private ReminderServiceInterface $reminderService;
+
+    /**
+     * Constructor with dependency injection
+     *
+     * @param ReminderServiceInterface $reminderService
+     */
+    public function __construct(ReminderServiceInterface $reminderService)
     {
         $this->reminderService = $reminderService;
-        $this->emailService = $emailService;
     }
-    
+
     /**
-     * Get all reminders for an order
+     * Schedule reminders for an order.
+     *
+     * @param ScheduleRequest $request
+     * @return JsonResponse
      */
-    public function getOrderReminders($orderId): JsonResponse
+    public function schedule(ScheduleRequest $request): JsonResponse
     {
-        $order = Order::findOrFail($orderId);
-        $reminders = $order->reminders()->orderBy('scheduled_date')->get();
-        
-        return response()->json(['reminders' => $reminders]);
-    }
-    
-    /**
-     * Get details of a specific reminder
-     */
-    public function show($id): JsonResponse
-    {
-        $reminder = Reminder::with(['order', 'reminderConfiguration'])->findOrFail($id);
-        
-        return response()->json(['reminder' => $reminder]);
-    }
-    
-    /**
-     * Manually send a specific reminder
-     */
-    public function send($id): JsonResponse
-    {
-        $reminder = Reminder::findOrFail($id);
-        
-        if ($reminder->status !== Reminder::STATUS_PENDING) {
+        try {
+            $order = Order::findOrFail($request->order_id);
+            
+            // Calculate expiration date if not provided
+            if (!$request->has('expiration_date')) {
+                $order->expiration_date = $this->reminderService->calculateExpirationDate($order);
+            } else {
+                $order->expiration_date = $request->expiration_date;
+            }
+            
+            $order->save();
+
+            $reminders = $this->reminderService->scheduleRemindersForOrder($order);
+
             return response()->json([
-                'success' => false,
-                'message' => 'This reminder is not in pending status and cannot be sent.',
-            ], 400);
-        }
-        
-        $success = $this->emailService->sendReminder($reminder);
-        
-        return response()->json([
-            'success' => $success,
-            'reminder' => $reminder->fresh(),
-        ]);
-    }
-    
-    /**
-     * Process all pending reminders that are due to be sent
-     */
-    public function processPendingReminders(): JsonResponse
-    {
-        $results = $this->emailService->sendPendingReminders();
-        
-        return response()->json(['results' => $results]);
-    }
-    
-    /**
-     * Cancel a pending reminder
-     */
-    public function cancel($id, Request $request): JsonResponse
-    {
-        $reminder = Reminder::findOrFail($id);
-        
-        if ($reminder->status !== Reminder::STATUS_PENDING) {
+                'message' => 'Successfully scheduled reminders for the order',
+                'data' => [
+                    'order_id' => $order->id,
+                    'reminders_scheduled' => count($reminders)
+                ]
+            ], 201);
+        } catch (\InvalidArgumentException $e) {
             return response()->json([
-                'success' => false,
-                'message' => 'Only pending reminders can be cancelled.',
+                'message' => $e->getMessage()
             ], 400);
-        }
-        
-        $reason = $request->input('reason', 'Manually cancelled');
-        $success = $reminder->cancel($reason);
-        
-        return response()->json([
-            'success' => $success,
-            'reminder' => $reminder->fresh(),
-        ]);
-    }
-    
-    /**
-     * Reschedule a pending reminder
-     */
-    public function reschedule($id, Request $request): JsonResponse
-    {
-        $reminder = Reminder::findOrFail($id);
-        
-        if ($reminder->status !== Reminder::STATUS_PENDING) {
+        } catch (\Throwable $e) {
+            Log::error('Failed to schedule reminders: ' . $e->getMessage(), [
+                'order_id' => $request->order_id,
+                'exception' => $e
+            ]);
+
             return response()->json([
-                'success' => false,
-                'message' => 'Only pending reminders can be rescheduled.',
-            ], 400);
+                'message' => 'Failed to schedule reminders',
+                'errors' => ['general' => ['Please try again later.']]
+            ], 500);
         }
-        
-        $request->validate([
-            'scheduled_date' => 'required|date|after:now',
-        ]);
-        
-        $reminder->scheduled_date = $request->scheduled_date;
-        $success = $reminder->save();
-        
-        return response()->json([
-            'success' => $success,
-            'reminder' => $reminder,
-        ]);
+    }
+
+    /**
+     * Cancel reminders for an order.
+     *
+     * @param CancelRequest $request
+     * @return JsonResponse
+     */
+    public function cancel(CancelRequest $request): JsonResponse
+    {
+        try {
+            $order = Order::findOrFail($request->order_id);
+            $cancelledCount = $this->reminderService->cancelRemindersForOrder($order, $request->reason);
+
+            return response()->json([
+                'message' => "Successfully cancelled {$cancelledCount} reminders",
+                'data' => [
+                    'order_id' => $order->id,
+                    'cancelled_count' => $cancelledCount
+                ]
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'message' => $e->getMessage()
+            ], 400);
+        } catch (\Throwable $e) {
+            Log::error('Failed to cancel reminders: ' . $e->getMessage(), [
+                'order_id' => $request->order_id,
+                'exception' => $e
+            ]);
+
+            return response()->json([
+                'message' => 'Failed to cancel reminders',
+                'errors' => ['general' => ['Please try again later.']]
+            ], 500);
+        }
+    }
+
+    /**
+     * Update the status of a reminder.
+     *
+     * @param StatusRequest $request
+     * @return JsonResponse
+     */
+    public function updateStatus(StatusRequest $request): JsonResponse
+    {
+        try {
+            $reminder = Reminder::findOrFail($request->reminder_id);
+            $success = false;
+
+            if ($request->status === 'sent') {
+                $success = $this->reminderService->markReminderAsSent($reminder);
+            } elseif ($request->status === 'failed') {
+                $success = $this->reminderService->markReminderAsFailed($reminder, $request->error_message);
+            }
+
+            if (!$success) {
+                return response()->json([
+                    'message' => 'Failed to update reminder status',
+                    'errors' => ['general' => ['Please try again later.']]
+                ], 500);
+            }
+
+            return response()->json([
+                'message' => "Successfully marked reminder as {$request->status}",
+                'data' => [
+                    'reminder_id' => $reminder->id,
+                    'status' => $request->status
+                ]
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Failed to update reminder status: ' . $e->getMessage(), [
+                'reminder_id' => $request->reminder_id,
+                'status' => $request->status,
+                'exception' => $e
+            ]);
+
+            return response()->json([
+                'message' => 'Failed to update reminder status',
+                'errors' => ['general' => ['Please try again later.']]
+            ], 500);
+        }
     }
 } 
