@@ -1,0 +1,18 @@
+version: '3'
+
+services:
+  app-debug:
+    image: 'sc/platform'
+    container_name: 'sc-debug'
+    working_dir: '/app'
+    volumes:
+      - './docker/php/php_debug.ini:/opt/bitnami/php/etc/php.ini'
+      - './:/app'
+    ports:
+      - "9003:9003"
+    networks:
+      - ph_network
+
+networks:
+  ph_network:
+    external: true

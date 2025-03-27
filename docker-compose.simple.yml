@@ -1,0 +1,53 @@
+version: '3'
+
+services:
+  app:
+    image: reminder/service
+    build:
+      context: ./docker/php
+      dockerfile: Dockerfile
+    working_dir: /var/www/reminder-service
+    volumes:
+      - ./:/var/www/reminder-service
+    environment:
+      - DB_CONNECTION=mysql
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_DATABASE=reminder_service
+      - DB_USERNAME=reminder_user
+      - DB_PASSWORD=reminder_password
+    networks:
+      - reminder-network
+    depends_on:
+      - mariadb
+
+  webserver:
+    image: nginx:alpine
+    ports:
+      - "8000:80"
+    volumes:
+      - ./:/var/www/reminder-service
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - app
+    networks:
+      - reminder-network
+
+  mariadb:
+    image: mariadb:10
+    container_name: reminder-db
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: reminder_service
+      MYSQL_USER: reminder_user
+      MYSQL_PASSWORD: reminder_password
+    ports:
+      - "33306:3306"
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+    networks:
+      - reminder-network
+
+networks:
+  reminder-network:
+    driver: bridge 
