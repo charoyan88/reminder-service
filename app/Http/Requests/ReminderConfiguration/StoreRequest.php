@@ -1,0 +1,34 @@
+<?php
+
+namespace App\Http\Requests\ReminderConfiguration;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class StoreRequest extends FormRequest
+{
+    /**
+     * Determine if the user is authorized to make this request.
+     */
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    /**
+     * Get the validation rules that apply to the request.
+     *
+     * @return array<string, mixed>
+     */
+    public function rules(): array
+    {
+        return [
+            'order_type_id' => 'required|exists:order_types,id',
+            'reminder_type' => 'required|in:pre_expiration,post_expiration',
+            'interval_value' => 'required|integer|min:1',
+            'interval_unit' => 'required|in:day,week,month',
+            'is_active' => 'boolean',
+            'email_template' => 'nullable|string',
+            'email_subject' => 'nullable|string',
+        ];
+    }
+} 
